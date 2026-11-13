@@ -84,7 +84,7 @@ const state = {
   activeSports: LS.get('ss_active', null),
   seenBooks: LS.get('ss_seen', {}),
   slip: LS.get('ss_slip', []),
-  parlay: { n: 3, legs: [], banned: [], stake: LS.get('ss_stake', 10) },
+  parlay: { n: 3, legs: [], banned: [], stake: LS.get('ss_stake', 10), target: LS.get('ss_target', 25) },
   filter: { sport: 'all', market: 'all' },
   loading: false, error: '', demoData: null, cands: [],
 };
@@ -301,16 +301,44 @@ function ranked(list = filtered()) {
 const kelly = (p, d) => { const b = d - 1; const f = (b * p - (1 - p)) / b; return Math.max(0, f) * S.kellyFrac * S.bankroll; };
 
 // ---------- PARLAY ----------
-function buildParlay(randomize = false) {
-  const P = state.parlay;
-  let pool = ranked().filter(c => !P.banned.includes(c.id));
-  if (randomize) {
-    // Shuffle the top of the list, biased toward better picks, for a fresh combination.
-    const top = pool.slice(0, Math.max(P.n * 4, 20)), rest = pool.slice(top.length);
-    top.forEach((c, i) => c._r = Math.random() * (1 + i / top.length * 2));
-    pool = [...top.sort((a, b) => a._r - b._r), ...rest];
+/* Target-win-chance builder: the slider sets the chance ALL legs hit (e.g. 25%).
+   Each leg needs roughly target^(1/legs) (25% over 3 legs ≈ 63% per leg). We pick legs near
+   that, favouring better value, then swap legs until the combined chance lands on the target. */
+const targetPool = () => {
+  const floor = S.mode === 'value' ? 0 : S.safeMinEV / 100; // never take badly-priced legs
+  return filtered().filter(c => c.ev >= floor && !state.parlay.banned.includes(c.id));
+};
+const perLegTarget = () => Math.pow(state.parlay.target / 100, 1 / state.parlay.n);
+function parlayScore(legs, logT) {
+  const lp = legs.reduce((a, l) => a + Math.log(l.fair), 0);
+  return Math.abs(lp - logT) - legs.reduce((a, l) => a + 0.5 * l.ev + (l._j || 0), 0); // lower is better
+}
+function fits(c, legs) {
+  return !legs.some(l => l.id === c.id || l.eventId + l.group === c.eventId + c.group || (S.oneLegPerGame && l.eventId === c.eventId));
+}
+function buildParlay(randomize = false, keep = []) {
+  const P = state.parlay, n = P.n, logT = Math.log(P.target / 100), lp = Math.log(perLegTarget());
+  // Shuffle = give every candidate a random bonus so a different (still on-target) combo wins.
+  const pool = targetPool()
+    .map(c => { c._j = randomize ? Math.random() * 0.12 : 0; return { c, s: Math.abs(Math.log(c.fair) - lp) - 0.5 * c.ev - c._j }; })
+    .sort((a, b) => a.s - b.s).slice(0, 300).map(x => x.c);
+  let legs = pickLegs(pool, n, keep);
+  // Local search: swap one leg at a time while it moves the parlay closer to the target.
+  for (let iter = 0; iter < 25; iter++) {
+    let best = parlayScore(legs, logT), swap = null;
+    for (let i = keep.length; i < legs.length; i++) {
+      const others = legs.filter((_, j) => j !== i);
+      for (const c of pool) {
+        if (!fits(c, others)) continue;
+        const trial = [...others.slice(0, i), c, ...others.slice(i)];
+        const s = parlayScore(trial, logT);
+        if (s < best - 1e-6) { best = s; swap = trial; }
+      }
+    }
+    if (!swap) break;
+    legs = swap;
   }
-  P.legs = pickLegs(pool, P.n, []);
+  P.legs = legs;
 }
 function pickLegs(pool, n, start) {
   const legs = [...start];
@@ -327,8 +355,7 @@ function pickLegs(pool, n, start) {
 function removeLeg(id) {
   const P = state.parlay;
   P.banned.push(id);
-  const keep = P.legs.filter(l => l.id !== id);
-  P.legs = pickLegs(ranked().filter(c => !P.banned.includes(c.id)), P.n, keep);
+  buildParlay(false, P.legs.filter(l => l.id !== id));
 }
 function parlayMath(legs) {
   const prob = legs.reduce((a, l) => a * l.fair, 1);
@@ -516,20 +543,45 @@ function summary(legs, label) {
   </div>`;
 }
 
+function targetHint() {
+  const T = state.parlay.target / 100;
+  return `Each leg needs about <b>${pct(perLegTarget())}</b> to hit · a fair payout at ${pct(T)} is about <b>${decToAm(1 / T)}</b>`;
+}
+function parlayOut() {
+  const P = state.parlay;
+  if (!P.legs.length) return targetPool().length ? '' : noPicksMsg();
+  let h = '';
+  if (P.legs.length < P.n) h += `<div class="note">Only found ${P.legs.length} qualifying legs. Try another mode, more sports, or load more props.</div>`;
+  const got = parlayMath(P.legs).prob * 100;
+  if (Math.abs(got - P.target) > Math.max(2, P.target * 0.15)) h += `<div class="note">Closest match available: <b>${got.toFixed(1)}%</b> (target ${P.target}%). Change the number of legs or the filters to get closer.</div>`;
+  return h + summary(P.legs, `${P.legs.length}-leg parlay at ${esc(myBook().name)} · target ${P.target}%`) +
+    P.legs.map((l, i) => legRow(l, i, 'rm')).join('') +
+    `<button class="btn ghost" data-act="toslip">Copy legs to My Slip</button>`;
+}
+function updateTarget(v) {
+  const P = state.parlay;
+  P.target = v;
+  $('#tgtVal').textContent = v + '%';
+  $('#target').style.setProperty('--fill', (v - 1) / 79 * 100 + '%');
+  $('#tgtHint').innerHTML = targetHint();
+  if (P.legs.length) { P.banned = []; buildParlay(false); $('#parlayOut').innerHTML = parlayOut(); }
+}
+
 function viewParlay() {
   const P = state.parlay;
   const slip = state.slip.map(id => state.cands.find(c => c.id === id)).filter(Boolean);
   let h = `<h2>Auto parlay builder</h2>
     <div class="stepper"><button data-act="nminus">−</button><div class="val">${P.n} legs</div><button data-act="nplus">+</button></div>
+    <div class="slider">
+      <div class="slidehead"><span>Chance to win</span><b id="tgtVal">${P.target}%</b></div>
+      <input type="range" id="target" min="1" max="80" step="1" value="${P.target}" style="--fill:${(P.target - 1) / 79 * 100}%">
+      <div class="slidelabels"><span>🚀 Long shot</span><span>⚖️ Balanced</span><span>🛡️ Safer</span></div>
+      <div class="muted small" id="tgtHint">${targetHint()}</div>
+    </div>
     ${filterChips()}
     <div class="field"><label>Stake ($)</label><input type="number" inputmode="decimal" id="stake" value="${esc(P.stake)}"></div>
-    <div class="btnrow"><button class="btn" data-act="build">Build ${P.n}-leg parlay</button>${P.legs.length ? '<button class="btn ghost" data-act="reroll">🎲 Shuffle</button>' : ''}</div>`;
-  if (P.legs.length) {
-    if (P.legs.length < P.n) h += `<div class="note">Only found ${P.legs.length} qualifying legs. Try another mode, more sports, or load more props.</div>`;
-    h += summary(P.legs, `${P.legs.length}-leg ${S.mode === 'value' ? 'value' : 'safe'} parlay at ${esc(myBook().name)}`) +
-      P.legs.map((l, i) => legRow(l, i, 'rm')).join('') +
-      `<button class="btn ghost" data-act="toslip">Copy legs to My Slip</button>`;
-  } else if (!ranked().length) h += noPicksMsg();
+    <div class="btnrow"><button class="btn" data-act="build">Build ${P.n}-leg parlay</button>${P.legs.length ? '<button class="btn ghost" data-act="reroll">🎲 Shuffle</button>' : ''}</div>
+    <div id="parlayOut">${parlayOut()}</div>`;
   h += `<h2>My slip</h2>`;
   if (slip.length) {
     h += summary(slip, `Your ${slip.length}-leg parlay`) + slip.map((l, i) => legRow(l, i, 'unslip')).join('') + `<button class="btn ghost" data-act="clearslip">Clear slip</button>`;
@@ -605,7 +657,7 @@ function viewSettings() {
   <b>Safe mode</b> shows the outcomes most likely to hit, while skipping heavy favorites and bad prices.<br><br>
   No pick is guaranteed. Even +EV bets lose often. Bet only what you can afford to lose.</div>
   <div class="note">Must be 21+ (18+ in some states) and in a legal jurisdiction. Gambling problem? Call or text <b>1-800-GAMBLER</b>.</div>
-  <p class="muted small" style="text-align:center">SharpSlip v1.0</p>`;
+  <p class="muted small" style="text-align:center">SharpSlip v1.1</p>`;
 }
 
 function openBooks() {
@@ -657,10 +709,13 @@ document.addEventListener('click', e => {
   }
 });
 $('#refreshBtn').addEventListener('click', () => refresh(true));
+// Slider updates live while dragging, without re-rendering the whole page.
+document.addEventListener('input', e => { if (e.target.id === 'target') updateTarget(Number(e.target.value)); });
 $('#bookDialog').addEventListener('click', e => { if (e.target.id === 'bookDialog') e.target.close(); });
 
 document.addEventListener('change', e => {
   const t = e.target, d = t.dataset;
+  if (t.id === 'target') { LS.set('ss_target', state.parlay.target); return; }
   if (t.id === 'stake') { state.parlay.stake = Math.max(0, Number(t.value) || 0); LS.set('ss_stake', state.parlay.stake); render(); return; }
   if (d.sport) { S.sports = t.checked ? [...new Set([...S.sports, d.sport])] : S.sports.filter(x => x !== d.sport); saveSettings(); return; }
   if (d.mkt) { S.markets[d.mkt] = t.checked; saveSettings(); recompute(); return; }
