@@ -9,7 +9,7 @@
 
 const API = 'https://api.the-odds-api.com/v4';
 // ▼▼ Paste your Cloudflare Worker address here after deploying it (see server/SETUP.md) ▼▼
-const SERVER_URL = '';
+const SERVER_URL = 'https://sharpslip-odds.littlegus12.workers.dev';
 
 // ---------- CONFIG (edit freely) ----------
 // region = which Odds API region the book lives in. type: book | dfs | exchange
@@ -715,7 +715,7 @@ function viewSettings() {
   <b>Safe mode</b> shows the outcomes most likely to hit, while skipping heavy favorites and bad prices.<br><br>
   No pick is guaranteed. Even +EV bets lose often. Bet only what you can afford to lose.</div>
   <div class="note">Must be 21+ (18+ in some states) and in a legal jurisdiction. Gambling problem? Call or text <b>1-800-GAMBLER</b>.</div>
-  <p class="muted small" style="text-align:center">SharpSlip v1.2</p>`;
+  <p class="muted small" style="text-align:center">SharpSlip v1.3</p>`;
 }
 
 function openBooks() {
