@@ -186,8 +186,12 @@ async function route(url, env) {
 
 export default {
   async fetch(request, env) {
+    // ALLOWED_ORIGIN is forgiving: "https://name.github.io/sharpslip/" or a comma list both work.
+    const allowed = list(cfg(env, 'ALLOWED_ORIGIN')).map(o => { try { return o === '*' ? '*' : new URL(o).origin; } catch { return o.replace(/\/+$/, ''); } });
+    const origin = request.headers.get('Origin') || '';
     const headers = {
-      'Access-Control-Allow-Origin': cfg(env, 'ALLOWED_ORIGIN'),
+      'Access-Control-Allow-Origin': allowed.includes('*') ? '*' : allowed.includes(origin) ? origin : allowed[0] || '*',
+      'Vary': 'Origin',
       'Access-Control-Allow-Methods': 'GET, OPTIONS',
       'Content-Type': 'application/json; charset=utf-8',
       'Cache-Control': 'public, max-age=60',
