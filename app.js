@@ -181,12 +181,19 @@ async function refresh(force = false) {
     const want = S.sports.filter(k => !state.activeSports || state.activeSports.includes(k));
     const mk = ['h2h', 'spreads', 'totals'].filter(m => S.markets[m]);
     if (!mk.length) mk.push('h2h');
+    state.waiting = [];
     for (const sk of want) {
       if (!force && fresh(state.games[sk], regions)) continue;
       if (srv) {
-        const r = await serverGet('/odds', { sport: sk });
-        state.games[sk] = { at: Date.now(), oddsAt: r.at, regions, data: r.data };
-        noteBooks(r.data); LS.set('ss_games', state.games);
+        // One sport hitting the server's daily credit limit shouldn't stop the others from loading.
+        try {
+          const r = await serverGet('/odds', { sport: sk });
+          state.games[sk] = { at: Date.now(), oddsAt: r.at, regions, data: r.data };
+          noteBooks(r.data); LS.set('ss_games', state.games);
+        } catch (e) {
+          if (!/budget|credit/i.test(e.message)) throw e;
+          state.waiting.push(sk);
+        }
         continue;
       }
       const data = await apiGet(`/sports/${sk}/odds`, {
@@ -222,7 +229,10 @@ async function loadProps(eventIds) {
       state.props[id] = { at: Date.now(), regions, sport: ev.sport_key, data: { bookmakers: data.bookmakers || [] } };
       noteBooks([data]); n++;
     }
-  } catch (e) { state.error = e.message; }
+  } catch (e) {
+    if (/budget|credit/i.test(e.message)) toast("Today's shared credit limit is used up. Props will load later.");
+    else state.error = e.message;
+  }
   // drop props for games that have started
   for (const id in state.props) if (!findEvent(id)) delete state.props[id];
   LS.set('ss_props', state.props);
@@ -508,6 +518,7 @@ function renderStatus() {
   parts.push(allEvents().length + ' games');
   if (src === 'key' && state.credits) parts.push(state.credits.remaining + ' credits left');
   if (state.stale) parts.push('saving credits, some odds older');
+  if (state.waiting?.length) parts.push(`⏳ ${state.waiting.map(k => sportOf(k).name).join(', ')} waiting on today's credit limit`);
   st.textContent = parts.join(' · ');
 }
 
@@ -715,7 +726,7 @@ function viewSettings() {
   <b>Safe mode</b> shows the outcomes most likely to hit, while skipping heavy favorites and bad prices.<br><br>
   No pick is guaranteed. Even +EV bets lose often. Bet only what you can afford to lose.</div>
   <div class="note">Must be 21+ (18+ in some states) and in a legal jurisdiction. Gambling problem? Call or text <b>1-800-GAMBLER</b>.</div>
-  <p class="muted small" style="text-align:center">SharpSlip v1.3</p>`;
+  <p class="muted small" style="text-align:center">SharpSlip v1.4</p>`;
 }
 
 function openBooks() {
