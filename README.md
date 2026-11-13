@@ -11,9 +11,13 @@ A free mobile web app that finds value bets, safer picks, and auto-built parlays
 
 Netlify Drop (app.netlify.com/drop) works too: drag the folder in.
 
+## Live odds: the shared server
+`server/` holds a free Cloudflare Worker that fetches odds once and shares them with everyone. Friends need no key. Setup: [server/SETUP.md](server/SETUP.md). After deploying, put the Worker address in `SERVER_URL` at the top of `app.js`.
+
+Anyone can still use their own Odds API key instead (Settings → "Use my own Odds API key").
+
 ## Each user's first-time setup
-- Pick your book (DraftKings, FanDuel, Hard Rock, PrizePicks, Kalshi, …).
-- Settings → paste a free key from https://the-odds-api.com (500 credits per month free).
+- Pick your book (DraftKings, FanDuel, Hard Rock, PrizePicks, Kalshi, …). That's it.
 
 ## Where to change things (app.js)
 - `BOOKS`: the book list and which Odds API region each one is in

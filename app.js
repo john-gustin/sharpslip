@@ -2,11 +2,14 @@
 /* =====================================================================
    SharpSlip — finds +EV / high-probability bets at YOUR book by comparing
    its prices to the no-vig consensus of the rest of the market.
-   Data: The Odds API (https://the-odds-api.com). Each user supplies a key.
-   Everything is stored locally in the browser; no server, no login.
+   Data: a shared SharpSlip odds server (Cloudflare Worker, see /server) that
+   caches The Odds API for everyone, or a personal Odds API key, or demo data.
+   Settings are stored locally in the browser; no login.
    ===================================================================== */
 
 const API = 'https://api.the-odds-api.com/v4';
+// ▼▼ Paste your Cloudflare Worker address here after deploying it (see server/SETUP.md) ▼▼
+const SERVER_URL = '';
 
 // ---------- CONFIG (edit freely) ----------
 // region = which Odds API region the book lives in. type: book | dfs | exchange
@@ -60,7 +63,7 @@ const MARKET_LABEL = {
 const ONE_SIDED_VIG = 1.07; // assumed margin when a market only lists one side (e.g. anytime TD "Yes")
 
 const DEFAULTS = {
-  apiKey: '', demo: true, book: '', mode: 'value',
+  source: 'auto', serverUrl: '', apiKey: '', demo: true, book: '', mode: 'value',
   sports: ['americanfootball_nfl', 'americanfootball_ncaaf', 'basketball_nba', 'basketball_ncaab', 'baseball_mlb', 'icehockey_nhl', 'soccer_epl', 'mma_mixed_martial_arts'],
   markets: { h2h: true, spreads: true, totals: true, props: true },
   minBooks: 3, minEV: 1.0, safeMaxFav: -300, safeMinEV: -3,
@@ -114,6 +117,16 @@ function dfsTable() {
 // Best per-leg decimal "price" a DFS pick earns (used to judge single picks at DFS sites)
 function dfsLegDec() { const t = dfsTable(); let best = 1.8; for (const n in t) best = Math.max(best, Math.pow(t[n], 1 / n)); return best; }
 
+const serverUrl = () => String(S.serverUrl || SERVER_URL).trim().replace(/\/+$/, '');
+// Where odds come from: 'server' (shared, no key needed), 'key' (personal Odds API key) or 'demo'.
+function source() {
+  const srv = !!serverUrl(), key = !!String(S.apiKey).trim();
+  if (S.source === 'server') return srv ? 'server' : 'demo';
+  if (S.source === 'key') return key ? 'key' : 'demo';
+  if (S.source === 'demo') return 'demo';
+  return srv ? 'server' : key && !S.demo ? 'key' : 'demo';
+}
+
 function regionsNeeded() {
   const r = new Set(['us']);
   if (S.book) r.add(myBook().region);
@@ -137,21 +150,45 @@ async function apiGet(path, params) {
   return res.json();
 }
 
-const fresh = (entry, regions) => entry && Date.now() - entry.at < S.cacheMin * 60000 && regions.every(r => (entry.regions || []).includes(r));
+async function serverGet(path, params = {}) {
+  const u = new URL(serverUrl() + path);
+  for (const k in params) u.searchParams.set(k, params[k]);
+  let res, body;
+  try { res = await fetch(u); body = await res.json(); } catch { throw new Error('Could not reach the odds server. Check your connection.'); }
+  if (body && body.credits) { state.credits = { ...body.credits, at: Date.now() }; LS.set('ss_credits', state.credits); }
+  if (!res.ok) throw new Error(body?.error || 'Odds server error ' + res.status);
+  if (body.stale) state.stale = body.reason || 'Showing saved odds.';
+  return body;
+}
+
+// The shared server does the real caching, so phones re-check it every 2 minutes at most.
+const fresh = (entry, regions) => entry && Date.now() - entry.at < (source() === 'server' ? 2 : S.cacheMin) * 60000 && regions.every(r => (entry.regions || []).includes(r));
 
 async function refresh(force = false) {
-  if (S.demo || !S.apiKey) { loadDemo(); return; }
+  const src = source();
+  if (src === 'demo') { loadDemo(); return; }
   if (state.loading) return;
-  state.loading = true; state.error = ''; renderStatus();
-  const regions = regionsNeeded();
+  state.demoData = null;
+  state.loading = true; state.error = ''; state.stale = ''; renderStatus();
+  const srv = src === 'server';
+  const regions = srv ? ['server'] : regionsNeeded();
   try {
     // The sports list is free (doesn't use credits) — use it to skip out-of-season leagues.
-    try { const list = await apiGet('/sports', {}); state.activeSports = list.map(s => s.key); LS.set('ss_active', state.activeSports); } catch (e) { if (/key/.test(e.message)) throw e; }
+    try {
+      const list = srv ? (await serverGet('/sports')).data : (await apiGet('/sports', {})).map(s => s.key);
+      state.activeSports = list; LS.set('ss_active', list);
+    } catch (e) { if (/key|reach/.test(e.message)) throw e; }
     const want = S.sports.filter(k => !state.activeSports || state.activeSports.includes(k));
     const mk = ['h2h', 'spreads', 'totals'].filter(m => S.markets[m]);
     if (!mk.length) mk.push('h2h');
     for (const sk of want) {
       if (!force && fresh(state.games[sk], regions)) continue;
+      if (srv) {
+        const r = await serverGet('/odds', { sport: sk });
+        state.games[sk] = { at: Date.now(), oddsAt: r.at, regions, data: r.data };
+        noteBooks(r.data); LS.set('ss_games', state.games);
+        continue;
+      }
       const data = await apiGet(`/sports/${sk}/odds`, {
         regions: regions.join(','), markets: mk.join(','), oddsFormat: 'decimal',
         commenceTimeFrom: isoNoMs(Date.now()), commenceTimeTo: isoNoMs(Date.now() + S.hoursAhead * 3600000),
@@ -168,8 +205,10 @@ async function refresh(force = false) {
 }
 
 async function loadProps(eventIds) {
-  if (S.demo || !S.apiKey) { toast('Demo mode already includes props.'); return; }
-  const regions = regionsNeeded();
+  const src = source();
+  if (src === 'demo') { toast('Demo mode already includes props.'); return; }
+  const srv = src === 'server';
+  const regions = srv ? ['server'] : regionsNeeded();
   state.loading = true; state.error = ''; renderStatus();
   let n = 0;
   try {
@@ -177,7 +216,9 @@ async function loadProps(eventIds) {
       const ev = findEvent(id); if (!ev) continue;
       const markets = sportOf(ev.sport_key).props;
       if (!markets.length) continue;
-      const data = await apiGet(`/sports/${ev.sport_key}/events/${id}/odds`, { regions: regions.join(','), markets: markets.join(','), oddsFormat: 'decimal' });
+      const data = srv
+        ? (await serverGet('/props', { sport: ev.sport_key, event: id })).data
+        : await apiGet(`/sports/${ev.sport_key}/events/${id}/odds`, { regions: regions.join(','), markets: markets.join(','), oddsFormat: 'decimal' });
       state.props[id] = { at: Date.now(), regions, sport: ev.sport_key, data: { bookmakers: data.bookmakers || [] } };
       noteBooks([data]); n++;
     }
@@ -202,7 +243,8 @@ function allEvents() {
   const now = Date.now();
   for (const sk of S.sports) {
     for (const ev of state.games[sk]?.data || []) {
-      if (new Date(ev.commence_time).getTime() < now) continue; // skip games already started
+      const t = new Date(ev.commence_time).getTime();
+      if (t < now || t > now + S.hoursAhead * 3600000) continue; // skip started games and games too far out
       const p = state.props[ev.id]?.data?.bookmakers;
       out.push(p ? { ...ev, bookmakers: mergeBooks(ev.bookmakers, p) } : ev);
     }
@@ -457,12 +499,15 @@ function renderStatus() {
   st.classList.toggle('err', !!state.error);
   if (state.error) { st.textContent = '⚠️ ' + state.error; return; }
   if (state.loading) { st.textContent = 'Loading odds…'; return; }
-  if (S.demo || !S.apiKey) { st.innerHTML = '🧪 Demo data (sample odds). Add a free API key in Settings for live odds.'; return; }
-  const ts = Object.values(state.games).map(g => g.at);
+  const src = source();
+  if (src === 'demo') { st.innerHTML = '🧪 Demo data (sample odds). Live odds are set up in Settings.'; return; }
+  const ts = Object.values(state.games).map(g => g.oddsAt || g.at);
   const parts = [];
-  if (ts.length) parts.push('Updated ' + ago(Math.min(...ts)));
+  if (src === 'server') parts.push('🌐 Shared odds');
+  if (ts.length) parts.push('Odds from ' + ago(Math.min(...ts)));
   parts.push(allEvents().length + ' games');
-  if (state.credits) parts.push(state.credits.remaining + ' credits left');
+  if (src === 'key' && state.credits) parts.push(state.credits.remaining + ' credits left');
+  if (state.stale) parts.push('saving credits, some odds older');
   st.textContent = parts.join(' · ');
 }
 
@@ -592,18 +637,23 @@ function viewParlay() {
 
 function viewProps() {
   const evs = allEvents().filter(e => sportOf(e.sport_key).props.length);
+  const srv = source() === 'server';
   const regions = regionsNeeded().length;
   const missing = evs.filter(e => !state.props[e.id] && !state.demoData);
   const cost = e => sportOf(e.sport_key).props.length * regions;
+  const credits = list => srv ? '' : ` (~${list.reduce((a, e) => a + cost(e), 0)} credits)`;
   const next5 = missing.slice(0, 5);
-  let h = `<h2>Player props</h2><div class="note">Props cost more API credits than game lines, about <b>1 credit per prop type per region per game</b>, so you load them game by game. Picks from loaded games show up in Picks and Parlay automatically.</div>`;
+  let h = `<h2>Player props</h2><div class="note">` + (srv
+    ? `Props load game by game. Once anyone in your group loads a game, it's saved on the shared server for everyone for about 30 minutes.`
+    : `Props cost more API credits than game lines, about <b>1 credit per prop type per region per game</b>, so you load them game by game.`) +
+    ` Picks from loaded games show up in Picks and Parlay automatically.</div>`;
   if (state.demoData) h += `<p class="muted small">Demo mode: props are already loaded for every game.</p>`;
-  if (next5.length) h += `<button class="btn" data-act="props5">Load props for next ${next5.length} games (~${next5.reduce((a, e) => a + cost(e), 0)} credits)</button>`;
+  if (next5.length) h += `<button class="btn" data-act="props5">Load props for next ${next5.length} games${credits(next5)}</button>`;
   if (!evs.length) return h + `<div class="empty"><p>No games with props yet. Tap ↻ to load games.</p></div>`;
   h += '<h3>Games</h3>' + evs.map(e => {
     const sp = sportOf(e.sport_key), loaded = state.props[e.id] || state.demoData;
     return `<div class="game"><div class="body"><b>${esc(e.away_team)} @ ${esc(e.home_team)}</b><small>${sp.icon} ${esc(sp.name)} · ${fmtTime(e.commence_time)}</small></div>
-      ${loaded ? `<span class="ok">✓ ${state.props[e.id] ? ago(state.props[e.id].at) : 'loaded'}</span>` : `<button data-prop="${esc(e.id)}">Load (~${cost(e)})</button>`}</div>`;
+      ${loaded ? `<span class="ok">✓ ${state.props[e.id] ? ago(state.props[e.id].at) : 'loaded'}</span>` : `<button data-prop="${esc(e.id)}">Load${srv ? '' : ` (~${cost(e)})`}</button>`}</div>`;
   }).join('');
   return h;
 }
@@ -616,10 +666,18 @@ function viewSettings() {
   const num = (id, label, step = 1) => `<div class="field"><label>${label}</label><input type="number" step="${step}" inputmode="decimal" data-set="${id}" value="${esc(S[id])}"></div>`;
   return `
   <h2>Odds data</h2>
-  <div class="note"><b>Get a free API key (about 1 minute):</b> go to <a href="https://the-odds-api.com/#get-access" target="_blank" rel="noopener">the-odds-api.com</a>, choose the free plan, and copy the key from your email. Paste it below. It stays on this phone only.</div>
+  <div class="field"><label>Where odds come from</label><select data-set="source">
+    ${[['auto', 'Automatic (recommended)'], ['server', 'Shared odds server'], ['key', 'My own Odds API key'], ['demo', 'Demo data']].map(([v, l]) => `<option value="${v}" ${S.source === v ? 'selected' : ''}>${l}</option>`).join('')}
+  </select></div>
+  <p class="muted small">Now using: <b>${{ server: '🌐 Shared odds server (nothing to set up)', key: '🔑 Your own API key', demo: '🧪 Demo data' }[source()]}</b></p>
+  ${source() === 'server' && state.credits && state.credits.remaining != null ? `<p class="muted small">Server credits left: <b>${state.credits.remaining}</b> · today ${state.credits.spentToday}/${state.credits.dailyBudget ?? '∞'} used · resets in ${state.credits.daysLeft} days</p>` : ''}
+  ${SERVER_URL && S.source !== 'key' ? '' : `
+  <div class="field"><label>Shared server address (from whoever runs the server)</label><input type="text" inputmode="url" autocomplete="off" data-set="serverUrl" value="${esc(S.serverUrl)}" placeholder="https://sharpslip-odds.yourname.workers.dev"></div>`}
+  <details class="note"><summary><b>Use my own Odds API key instead</b></summary>
+  <p>Get a free key at <a href="https://the-odds-api.com/#get-access" target="_blank" rel="noopener">the-odds-api.com</a> (500 credits per month), paste it here, and set "Where odds come from" to "My own Odds API key".</p>
   <div class="field"><label>The Odds API key</label><input type="password" autocomplete="off" data-set="apiKey" value="${esc(S.apiKey)}" placeholder="paste key here"></div>
-  ${chk('demo', S.demo || !S.apiKey, 'Use demo data', 'Sample odds for trying the app. Turn off for live odds.')}
-  ${state.credits ? `<p class="muted small">Credits left this month: <b>${state.credits.remaining}</b> (used ${state.credits.used}). Each full refresh costs about ${perRefresh} credits. Odds are cached for ${S.cacheMin} min.</p>` : `<p class="muted small">Each full refresh costs about ${perRefresh} credits (free plan: 500 per month). Odds are cached for ${S.cacheMin} min.</p>`}
+  ${source() === 'key' ? (state.credits && state.credits.remaining != null && state.credits.used != null ? `<p class="muted small">Credits left this month: <b>${state.credits.remaining}</b> (used ${state.credits.used}). Each full refresh costs about ${perRefresh} credits. Odds are cached for ${S.cacheMin} min.</p>` : `<p class="muted small">Each full refresh costs about ${perRefresh} credits. Odds are cached for ${S.cacheMin} min.</p>`) : ''}
+  </details>
 
   <h2>Your book</h2>
   <button class="btn ghost" data-act="pickbook">${S.book ? esc(myBook().name) + ' · change' : 'Choose my book'}</button>
@@ -657,7 +715,7 @@ function viewSettings() {
   <b>Safe mode</b> shows the outcomes most likely to hit, while skipping heavy favorites and bad prices.<br><br>
   No pick is guaranteed. Even +EV bets lose often. Bet only what you can afford to lose.</div>
   <div class="note">Must be 21+ (18+ in some states) and in a legal jurisdiction. Gambling problem? Call or text <b>1-800-GAMBLER</b>.</div>
-  <p class="muted small" style="text-align:center">SharpSlip v1.1</p>`;
+  <p class="muted small" style="text-align:center">SharpSlip v1.2</p>`;
 }
 
 function openBooks() {
@@ -683,7 +741,7 @@ document.addEventListener('click', e => {
     if (changed) { state.slip = []; LS.set('ss_slip', []); }
     state.filter.market = 'all';
     recompute(); render();
-    if (!S.demo && S.apiKey && !regionsNeeded().every(r => Object.values(state.games).every(g => (g.regions || []).includes(r)))) refresh(true);
+    if (source() === 'key' && !regionsNeeded().every(r => Object.values(state.games).every(g => (g.regions || []).includes(r)))) refresh(true);
     return;
   }
   if (d.fs) { state.filter.sport = d.fs; render(); return; }
@@ -725,14 +783,20 @@ document.addEventListener('change', e => {
     else if (t.type === 'number') S[k] = Number(t.value);
     else S[k] = t.value.trim();
     if (k === 'apiKey' && S.apiKey) S.demo = false;
-    if (k === 'demo' && !S.demo && !S.apiKey) { S.demo = true; toast('Add an API key first'); }
+    if (k === 'source' && S.source === 'key' && !S.apiKey) toast('Add your API key below');
+    if (k === 'source' && S.source === 'server' && !serverUrl()) toast('Add the server address below');
     saveSettings();
-    if (k === 'apiKey' || k === 'demo') { state.demoData = null; if (S.demo || !S.apiKey) loadDemo(); else refresh(true); }
+    if (['apiKey', 'source', 'serverUrl'].includes(k)) {
+      state.demoData = null; state.games = {}; state.props = {}; state.credits = null; state.error = '';
+      LS.set('ss_games', {}); LS.set('ss_props', {});
+      if (source() === 'demo') loadDemo(); else refresh(true);
+      render();
+    }
     else { recompute(); render(); }
   }
 });
 
 // ---------- BOOT ----------
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => { });
-if (S.demo || !S.apiKey) loadDemo(); else { recompute(); render(); refresh(false); }
+if (source() === 'demo') loadDemo(); else { recompute(); render(); refresh(false); }
 if (!S.book) setTimeout(openBooks, 300);
