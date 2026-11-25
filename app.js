@@ -378,8 +378,12 @@ function parlayScore(legs, logT) {
   const lp = legs.reduce((a, l) => a + Math.log(l.fair), 0);
   return Math.abs(lp - logT) - legs.reduce((a, l) => a + 0.5 * l.ev + (l._j || 0), 0); // lower is better
 }
+// Can bet c join these legs? Never both sides of one bet; one leg per game unless the user allows more;
+// and even then never a moneyline + spread from the same game (they almost always win or lose together).
+const SIDE = new Set(['h2h', 'spreads']);
 function fits(c, legs) {
-  return !legs.some(l => l.id === c.id || l.eventId + l.group === c.eventId + c.group || (S.oneLegPerGame && l.eventId === c.eventId));
+  return !legs.some(l => l.id === c.id || l.eventId + l.group === c.eventId + c.group ||
+    (l.eventId === c.eventId && (S.oneLegPerGame || (SIDE.has(l.market) && SIDE.has(c.market)))));
 }
 function buildParlay(randomize = false, keep = []) {
   const P = state.parlay, n = P.n, logT = Math.log(P.target / 100), lp = Math.log(perLegTarget());
@@ -407,13 +411,9 @@ function buildParlay(randomize = false, keep = []) {
 }
 function pickLegs(pool, n, start) {
   const legs = [...start];
-  const ev = new Set(legs.map(l => l.eventId)), gr = new Set(legs.map(l => l.eventId + l.group));
   for (const c of pool) {
     if (legs.length >= n) break;
-    if (legs.some(l => l.id === c.id)) continue;
-    if (S.oneLegPerGame && ev.has(c.eventId)) continue;
-    if (gr.has(c.eventId + c.group)) continue; // never both sides of the same bet
-    legs.push(c); ev.add(c.eventId); gr.add(c.eventId + c.group);
+    if (fits(c, legs)) legs.push(c);
   }
   return legs;
 }
@@ -624,7 +624,14 @@ function parlayOut() {
     return noPicksMsg();
   }
   let h = '';
-  if (P.legs.length < P.n) h += `<div class="note">Only found ${P.legs.length} qualifying legs${P.time !== 'any' ? ' in this time window' : ''}. Try ${P.time !== 'any' ? 'a wider time window, ' : ''}another mode, more sports, or load more props.</div>`;
+  if (P.legs.length < P.n) {
+    const games = new Set(targetPool().map(c => c.eventId)).size;
+    const why = S.oneLegPerGame && games <= P.legs.length
+      ? `Only <b>${games} game${games === 1 ? '' : 's'}</b> ${P.time !== 'any' ? 'in this time window ' : ''}have qualifying bets, and parlays use one leg per game.`
+      : `Only found ${P.legs.length} qualifying legs${P.time !== 'any' ? ' in this time window' : ''}.`;
+    h += `<div class="note">${why} Try ${P.time !== 'any' ? 'a wider time window, ' : ''}${S.mode === 'value' ? 'Safe mode, ' : ''}more sports, or loading props.` +
+      (S.oneLegPerGame ? `<button class="btn ghost" data-act="allowsame">Allow 2+ legs from the same game</button><span class="small">Same-game legs are linked: if a game goes one way, several legs can win or lose together. Many books only take these as a "Same Game Parlay".</span>` : '') + `</div>`;
+  }
   const got = parlayMath(P.legs).prob * 100;
   if (Math.abs(got - P.target) > Math.max(2, P.target * 0.15)) h += `<div class="note">Closest match available: <b>${got.toFixed(1)}%</b> (target ${P.target}%). Change the number of legs or the filters to get closer.</div>`;
   return h + summary(P.legs, `${P.legs.length}-leg parlay at ${esc(myBook().name)} · target ${P.target}%`) +
@@ -745,7 +752,7 @@ function viewSettings() {
   <b>Safe mode</b> shows the outcomes most likely to hit, while skipping heavy favorites and bad prices.<br><br>
   No pick is guaranteed. Even +EV bets lose often. Bet only what you can afford to lose.</div>
   <div class="note">Must be 21+ (18+ in some states) and in a legal jurisdiction. Gambling problem? Call or text <b>1-800-GAMBLER</b>.</div>
-  <p class="muted small" style="text-align:center">SharpSlip v1.5</p>`;
+  <p class="muted small" style="text-align:center">SharpSlip v1.6</p>`;
 }
 
 function openBooks() {
@@ -795,6 +802,7 @@ document.addEventListener('click', e => {
     case 'nplus': state.parlay.n = Math.min(12, state.parlay.n + 1); state.parlay.legs = []; render(); break;
     case 'build': state.parlay.banned = []; buildParlay(false); render(); break;
     case 'reroll': buildParlay(true); render(); break;
+    case 'allowsame': S.oneLegPerGame = false; saveSettings(); state.parlay.banned = []; buildParlay(false); toast('Same-game legs allowed. Change it anytime in Settings.'); render(); break;
     case 'toslip': state.parlay.legs.forEach(l => { if (!state.slip.includes(l.id)) state.slip.push(l.id); }); LS.set('ss_slip', state.slip); toast('Copied to My Slip'); render(); break;
     case 'clearslip': state.slip = []; LS.set('ss_slip', []); render(); break;
     case 'props5': loadProps(allEvents().filter(e => sportOf(e.sport_key).props.length && !state.props[e.id]).slice(0, 5).map(e => e.id)); break;
