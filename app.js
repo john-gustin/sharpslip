@@ -655,7 +655,7 @@ function viewProps() {
   const credits = list => srv ? '' : ` (~${list.reduce((a, e) => a + cost(e), 0)} credits)`;
   const next5 = missing.slice(0, 5);
   let h = `<h2>Player props</h2><div class="note">` + (srv
-    ? `Props load game by game. Once anyone in your group loads a game, it's saved on the shared server for everyone for about 30 minutes.`
+    ? `Props load game by game. Once anyone in your group loads a game, it's saved on the shared server for everyone for about an hour.`
     : `Props cost more API credits than game lines, about <b>1 credit per prop type per region per game</b>, so you load them game by game.`) +
     ` Picks from loaded games show up in Picks and Parlay automatically.</div>`;
   if (state.demoData) h += `<p class="muted small">Demo mode: props are already loaded for every game.</p>`;

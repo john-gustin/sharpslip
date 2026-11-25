@@ -31,8 +31,8 @@ Send that address (without `/status`) to Claude so it can be built into the app.
 ## Optional settings (Worker → Settings → Variables, type "Text")
 | Name | Default | What it does |
 |---|---|---|
-| `LINES_TTL_MIN` | 10 | Minutes game lines stay cached |
-| `PROPS_TTL_MIN` | 30 | Minutes player props stay cached |
+| `LINES_TTL_MIN` | 30 | Minutes game lines stay cached |
+| `PROPS_TTL_MIN` | 60 | Minutes player props stay cached |
 | `RESET_DAY` | 1 | Day of the month your Odds API credits reset (see your Odds API account) |
 | `RESERVE_CREDITS` | 25 | Never spend below this |
 | `ALLOWED_ORIGIN` | * | Set to `https://john-gustin.github.io` so only your app can use the server from a browser |
@@ -41,7 +41,7 @@ Send that address (without `/status`) to Claude so it can be built into the app.
 | `LINE_REGIONS` / `PROP_REGIONS` | us,us2,us_ex / us,us2,us_dfs | Used only if the matching `_BOOKMAKERS` is set to `regions` |
 
 ## How many credits does it use?
-- **Game lines:** 3 credits per sport each time they refresh (at most every 10 minutes, and only when someone has the app open).
-- **Player props:** about 3–5 credits per game, loaded only when someone taps Load. They're then shared for 30 minutes.
+- **Game lines:** 3 credits per sport each time they refresh (at most every 30 minutes, and only when someone has the app open).
+- **Player props:** about 3–5 credits per game, loaded only when someone taps Load. They’re then shared for 60 minutes.
 - The server **spreads your remaining credits evenly over the days left in the month**. When today's share is used up, everyone sees the last saved odds until the next day, so it can't run dry early.
 - A **free key** (500 a month) gives about 25 credits a day, roughly 8 sport refreshes a day. The **$30/month plan** (20,000 credits) gives about 650 a day, which is plenty for a group of friends.

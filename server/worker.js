@@ -10,8 +10,8 @@
    ===================================================================== */
 
 const CONFIG_DEFAULTS = {
-  LINES_TTL_MIN: 10,              // how long game lines stay cached (minutes)
-  PROPS_TTL_MIN: 30,              // how long player props stay cached (minutes)
+  LINES_TTL_MIN: 30,              // how long game lines stay cached (minutes)
+  PROPS_TTL_MIN: 60,              // how long player props stay cached (minutes)
   HOURS_AHEAD: 48,                // only fetch games starting within this many hours
   // Exact books to fetch. The Odds API bills each group of up to 10 books like ONE region,
   // so 10 hand-picked books cost a third of fetching 3 whole regions.
