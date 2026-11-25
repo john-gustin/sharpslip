@@ -672,25 +672,62 @@ function viewParlay() {
   return h;
 }
 
+// Game details: every bet at your book for one game, or the exact reason there are none.
+function viewGame(id) {
+  const back = `<button class="btn ghost" data-act="gameback" style="margin-top:0">← All games</button>`;
+  const ev = findEvent(id);
+  if (!ev) return back + `<div class="empty"><div class="e">🗓️</div><p>This game is no longer in the loaded odds. Tap ↻ to refresh.</p></div>`;
+  const sp = sportOf(ev.sport_key), book = myBook().name;
+  const merged = allEvents().find(e => e.id === id) || ev;
+  const bms = merged.bookmakers || [];
+  const mine = bms.find(b => b.key === S.book);
+  const cands = state.cands.filter(c => c.eventId === id);
+  const pass = new Set(ranked(cands).map(c => c.id));
+  const sorted = [...cands].sort((a, b) => S.mode === 'value' ? b.ev - a.ev : b.fair - a.fair);
+  const started = new Date(ev.commence_time).getTime() < Date.now();
+  const propsLoaded = state.props[id] || state.demoData;
+  let h = back + `<div class="card" style="padding-right:14px"><div class="row1"><span>${sp.icon} ${esc(sp.name)}</span><span>${fmtTime(ev.commence_time)}</span></div>
+    <div class="sel" style="padding-right:0">${esc(ev.away_team)} @ ${esc(ev.home_team)}</div>
+    <div class="meta">Books with odds: <b>${bms.length}</b>${bms.length ? ' (' + bms.map(b => esc(bookOf(b.key).name)).join(', ') + ')' : ''}<br>
+    Bets at ${esc(book)} we could price: <b>${cands.length}</b> · passing ${S.mode === 'value' ? 'Value' : 'Safe'} rules: <b>${pass.size}</b></div></div>`;
+  const why = [];
+  if (started) why.push(`This game has <b>already started</b>. Live betting isn't supported, so its bets are hidden.`);
+  else if (!mine) why.push(`<b>${esc(book)} has no odds for this game</b> in the data yet. Books often post late or pull lines near kickoff. Try ↻ in a few minutes.`);
+  else if (!cands.length) why.push(`${esc(book)} has odds, but fewer than <b>${S.minBooks}</b> other books have the exact same lines to compare against. Lower "Minimum other books" in Settings to see more.`);
+  else if (!pass.size) why.push(`None of these bets pass <b>${S.mode === 'value' ? 'Value' : 'Safe'} mode</b>'s rules right now, so they don't appear in Picks. Here's everything anyway.`);
+  const off = ['h2h', 'spreads', 'totals', 'props'].filter(m => !S.markets[m]);
+  if (off.length) why.push(`Turned off in Settings: ${off.map(m => ({ h2h: 'Moneylines', spreads: 'Spreads', totals: 'Over/Unders', props: 'Player props' })[m]).join(', ')}.`);
+  if (isDFS() && !propsLoaded) why.push(`${esc(book)} only offers player props. Load props for this game below.`);
+  if (why.length) h += `<div class="note">${why.join('<br><br>')}</div>`;
+  if (!propsLoaded && sp.props.length && !started) h += `<button class="btn" data-prop="${esc(id)}">Load player props for this game</button>`;
+  if (sorted.length) h += `<h3>All bets at ${esc(book)} (✓ = passes ${S.mode === 'value' ? 'Value' : 'Safe'} rules)</h3>` +
+    sorted.map(c => card(c).replace('<div class="card">', `<div class="card" style="${pass.has(c.id) ? 'border-color:var(--accent2)' : 'opacity:.85'}">`).replace('class="mkt">', `class="mkt">${pass.has(c.id) ? '✓ ' : ''}`)).join('');
+  return h;
+}
+
 function viewProps() {
-  const evs = allEvents().filter(e => sportOf(e.sport_key).props.length);
+  if (state.gameId) return viewGame(state.gameId);
+  const evs = allEvents();
   const srv = source() === 'server';
   const regions = regionsNeeded().length;
-  const missing = evs.filter(e => !state.props[e.id] && !state.demoData);
+  const missing = evs.filter(e => sportOf(e.sport_key).props.length && !state.props[e.id] && !state.demoData);
   const cost = e => sportOf(e.sport_key).props.length * regions;
   const credits = list => srv ? '' : ` (~${list.reduce((a, e) => a + cost(e), 0)} credits)`;
   const next5 = missing.slice(0, 5);
-  let h = `<h2>Player props</h2><div class="note">` + (srv
+  let h = `<h2>Games & props</h2>` +
+    (state.waiting?.length ? `<div class="note">⏳ <b>${state.waiting.map(k => esc(sportOf(k).name)).join(', ')}</b> ${state.waiting.length > 1 ? 'are' : 'is'} waiting on today's shared credit limit, so ${state.waiting.length > 1 ? 'those games are not' : 'its games are not'} loaded yet.</div>` : '') +
+    `<p class="muted small">Tap a game to see every bet for it, or why there aren't any.</p><div class="note">` + (srv
     ? `Props load game by game. Once anyone in your group loads a game, it's saved on the shared server for everyone for about an hour.`
     : `Props cost more API credits than game lines, about <b>1 credit per prop type per region per game</b>, so you load them game by game.`) +
     ` Picks from loaded games show up in Picks and Parlay automatically.</div>`;
   if (state.demoData) h += `<p class="muted small">Demo mode: props are already loaded for every game.</p>`;
   if (next5.length) h += `<button class="btn" data-act="props5">Load props for next ${next5.length} games${credits(next5)}</button>`;
-  if (!evs.length) return h + `<div class="empty"><p>No games with props yet. Tap ↻ to load games.</p></div>`;
+  if (!evs.length) return h + `<div class="empty"><p>No games loaded yet. Tap ↻ to load games.</p></div>`;
   h += '<h3>Games</h3>' + evs.map(e => {
     const sp = sportOf(e.sport_key), loaded = state.props[e.id] || state.demoData;
-    return `<div class="game"><div class="body"><b>${esc(e.away_team)} @ ${esc(e.home_team)}</b><small>${sp.icon} ${esc(sp.name)} · ${fmtTime(e.commence_time)}</small></div>
-      ${loaded ? `<span class="ok">✓ ${state.props[e.id] ? ago(state.props[e.id].at) : 'loaded'}</span>` : `<button data-prop="${esc(e.id)}">Load${srv ? '' : ` (~${cost(e)})`}</button>`}</div>`;
+    const n = state.cands.filter(c => c.eventId === e.id).length;
+    return `<div class="game"><button class="gamebody" data-game="${esc(e.id)}"><b>${esc(e.away_team)} @ ${esc(e.home_team)}</b><small>${sp.icon} ${esc(sp.name)} · ${fmtTime(e.commence_time)} · ${n} bet${n === 1 ? '' : 's'} ›</small></button>
+      ${!sp.props.length ? '' : loaded ? `<span class="ok">✓ props ${state.props[e.id] ? ago(state.props[e.id].at) : ''}</span>` : `<button data-prop="${esc(e.id)}">Load props${srv ? '' : ` (~${cost(e)})`}</button>`}</div>`;
   }).join('');
   return h;
 }
@@ -752,7 +789,7 @@ function viewSettings() {
   <b>Safe mode</b> shows the outcomes most likely to hit, while skipping heavy favorites and bad prices.<br><br>
   No pick is guaranteed. Even +EV bets lose often. Bet only what you can afford to lose.</div>
   <div class="note">Must be 21+ (18+ in some states) and in a legal jurisdiction. Gambling problem? Call or text <b>1-800-GAMBLER</b>.</div>
-  <p class="muted small" style="text-align:center">SharpSlip v1.6</p>`;
+  <p class="muted small" style="text-align:center">SharpSlip v1.7</p>`;
 }
 
 function openBooks() {
@@ -768,7 +805,8 @@ function openBooks() {
 document.addEventListener('click', e => {
   const t = e.target.closest('button'); if (!t) return;
   const d = t.dataset;
-  if (d.tab) { state.tab = d.tab; render(); window.scrollTo(0, 0); return; }
+  if (d.tab) { state.tab = d.tab; state.gameId = null; render(); window.scrollTo(0, 0); return; }
+  if (d.game) { state.gameId = d.game; render(); window.scrollTo(0, 0); return; }
   if (d.mode) { S.mode = d.mode; saveSettings(); state.parlay.legs = []; render(); return; }
   if (d.close != null) { $('#bookDialog').close(); return; }
   if (d.book) {
@@ -798,6 +836,7 @@ document.addEventListener('click', e => {
   if (d.prop) { loadProps([d.prop]); return; }
   switch (d.act) {
     case 'pickbook': openBooks(); break;
+    case 'gameback': state.gameId = null; render(); break;
     case 'nminus': state.parlay.n = Math.max(2, state.parlay.n - 1); state.parlay.legs = []; render(); break;
     case 'nplus': state.parlay.n = Math.min(12, state.parlay.n + 1); state.parlay.legs = []; render(); break;
     case 'build': state.parlay.banned = []; buildParlay(false); render(); break;
