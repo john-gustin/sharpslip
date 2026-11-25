@@ -13,8 +13,13 @@ const CONFIG_DEFAULTS = {
   LINES_TTL_MIN: 10,              // how long game lines stay cached (minutes)
   PROPS_TTL_MIN: 30,              // how long player props stay cached (minutes)
   HOURS_AHEAD: 48,                // only fetch games starting within this many hours
-  LINE_REGIONS: 'us,us2,us_ex',   // sportsbooks + Kalshi/Polymarket/exchanges
-  PROP_REGIONS: 'us,us2,us_dfs',  // sportsbooks + PrizePicks/Underdog/Pick6
+  // Exact books to fetch. The Odds API bills each group of up to 10 books like ONE region,
+  // so 10 hand-picked books cost a third of fetching 3 whole regions.
+  // Set either to "regions" to use LINE_REGIONS / PROP_REGIONS instead.
+  LINE_BOOKMAKERS: 'draftkings,fanduel,hardrockbet,betmgm,williamhill_us,espnbet,fanatics,betrivers,betonlineag,pinnacle',
+  PROP_BOOKMAKERS: 'draftkings,fanduel,hardrockbet,betmgm,williamhill_us,espnbet,fanatics,betrivers,prizepicks,underdog',
+  LINE_REGIONS: 'us,us2,us_ex',   // only used when LINE_BOOKMAKERS = regions
+  PROP_REGIONS: 'us,us2,us_dfs',  // only used when PROP_BOOKMAKERS = regions
   RESERVE_CREDITS: 25,            // never spend below this many credits
   RESET_DAY: 1,                   // day of month your Odds API credits reset
   ALLOWED_ORIGIN: '*',            // e.g. https://yourname.github.io to only allow your app
@@ -47,6 +52,16 @@ const cfg = (env, k) => {
 };
 const list = s => String(s).split(',').map(x => x.trim()).filter(Boolean);
 const isoNoMs = t => new Date(t).toISOString().replace(/\.\d{3}Z$/, 'Z');
+// Returns the query param to send ({bookmakers} or {regions}) and how many "region units" it costs.
+function source(env, kind) {
+  const books = cfg(env, kind + '_BOOKMAKERS');
+  if (books.trim().toLowerCase() !== 'regions') {
+    const b = list(books);
+    return { param: { bookmakers: b.join(',') }, units: Math.max(1, Math.ceil(b.length / 10)) };
+  }
+  const r = list(cfg(env, kind + '_REGIONS'));
+  return { param: { regions: r.join(',') }, units: r.length };
+}
 const today = () => new Date().toISOString().slice(0, 10);
 
 // ---------- storage: in-memory first, then KV (shared across all Cloudflare locations) ----------
@@ -155,10 +170,10 @@ async function route(url, env) {
   if (!(sport in SPORT_PROPS)) throw new HttpError(400, 'Unknown sport.');
 
   if (p === '/odds') {
-    const regions = list(cfg(env, 'LINE_REGIONS'));
-    const r = await cached(env, 'odds:' + sport, cfg(env, 'LINES_TTL_MIN'), LINE_MARKETS.length * regions.length, meta =>
+    const src = source(env, 'LINE');
+    const r = await cached(env, 'odds:' + sport, cfg(env, 'LINES_TTL_MIN'), LINE_MARKETS.length * src.units, meta =>
       oddsFetch(env, meta, `/sports/${sport}/odds`, {
-        regions: regions.join(','), markets: LINE_MARKETS.join(','), oddsFormat: 'decimal',
+        ...src.param, markets: LINE_MARKETS.join(','), oddsFormat: 'decimal',
         commenceTimeFrom: isoNoMs(Date.now()), commenceTimeTo: isoNoMs(Date.now() + cfg(env, 'HOURS_AHEAD') * 3600000),
       }));
     return { at: r.at, stale: r.stale, reason: r.reason, data: r.data, credits: creditSummary(env, await getMeta(env)) };
@@ -173,9 +188,9 @@ async function route(url, env) {
     if (!ev) throw new HttpError(404, 'Game not found. Refresh game lines first.');
     const markets = SPORT_PROPS[sport];
     if (!markets.length) return { at: Date.now(), data: { bookmakers: [] } };
-    const regions = list(cfg(env, 'PROP_REGIONS'));
-    const r = await cached(env, 'props:' + event, cfg(env, 'PROPS_TTL_MIN'), markets.length * regions.length, async meta => {
-      const d = await oddsFetch(env, meta, `/sports/${sport}/events/${event}/odds`, { regions: regions.join(','), markets: markets.join(','), oddsFormat: 'decimal' });
+    const src = source(env, 'PROP');
+    const r = await cached(env, 'props:' + event, cfg(env, 'PROPS_TTL_MIN'), markets.length * src.units, async meta => {
+      const d = await oddsFetch(env, meta, `/sports/${sport}/events/${event}/odds`, { ...src.param, markets: markets.join(','), oddsFormat: 'decimal' });
       return { bookmakers: d.bookmakers || [] };
     });
     return { at: r.at, stale: r.stale, reason: r.reason, data: r.data, credits: creditSummary(env, await getMeta(env)) };

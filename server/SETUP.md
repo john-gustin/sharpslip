@@ -36,11 +36,12 @@ Send that address (without `/status`) to Claude so it can be built into the app.
 | `RESET_DAY` | 1 | Day of the month your Odds API credits reset (see your Odds API account) |
 | `RESERVE_CREDITS` | 25 | Never spend below this |
 | `ALLOWED_ORIGIN` | * | Set to `https://john-gustin.github.io` so only your app can use the server from a browser |
-| `LINE_REGIONS` | us,us2,us_ex | Sportsbooks + Kalshi/Polymarket |
-| `PROP_REGIONS` | us,us2,us_dfs | Sportsbooks + PrizePicks/Underdog/Pick6 |
+| `LINE_BOOKMAKERS` | draftkings, fanduel, hardrockbet, betmgm, williamhill_us, espnbet, fanatics, betrivers, betonlineag, pinnacle | Books for game lines. Up to 10 books cost the same as 1 region |
+| `PROP_BOOKMAKERS` | draftkings, fanduel, hardrockbet, betmgm, williamhill_us, espnbet, fanatics, betrivers, prizepicks, underdog | Books for player props |
+| `LINE_REGIONS` / `PROP_REGIONS` | us,us2,us_ex / us,us2,us_dfs | Used only if the matching `_BOOKMAKERS` is set to `regions` |
 
 ## How many credits does it use?
-- **Game lines:** 9 credits per sport each time they refresh (at most every 10 minutes, and only when someone has the app open).
-- **Player props:** about 9–15 credits per game, loaded only when someone taps Load. They're then shared for 30 minutes.
+- **Game lines:** 3 credits per sport each time they refresh (at most every 10 minutes, and only when someone has the app open).
+- **Player props:** about 3–5 credits per game, loaded only when someone taps Load. They're then shared for 30 minutes.
 - The server **spreads your remaining credits evenly over the days left in the month**. When today's share is used up, everyone sees the last saved odds until the next day, so it can't run dry early.
-- A **free key** (500 a month) gives about 25 credits a day, roughly 2–3 refreshes a day, so expect older odds. The **$30/month plan** (20,000 credits) gives about 650 a day, which is plenty for a group of friends.
+- A **free key** (500 a month) gives about 25 credits a day, roughly 8 sport refreshes a day. The **$30/month plan** (20,000 credits) gives about 650 a day, which is plenty for a group of friends.
