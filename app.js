@@ -87,7 +87,7 @@ const state = {
   activeSports: LS.get('ss_active', null),
   seenBooks: LS.get('ss_seen', {}),
   slip: LS.get('ss_slip', []),
-  parlay: { n: 3, legs: [], banned: [], stake: LS.get('ss_stake', 10), target: LS.get('ss_target', 25) },
+  parlay: { n: 3, legs: [], banned: [], stake: LS.get('ss_stake', 10), target: LS.get('ss_target', 25), time: LS.get('ss_ptime', 'any') },
   filter: { sport: 'all', market: 'all' },
   loading: false, error: '', demoData: null, cands: [],
 };
@@ -356,9 +356,22 @@ const kelly = (p, d) => { const b = d - 1; const f = (b * p - (1 - p)) / b; retu
 /* Target-win-chance builder: the slider sets the chance ALL legs hit (e.g. 25%).
    Each leg needs roughly target^(1/legs) (25% over 3 legs ≈ 63% per leg). We pick legs near
    that, favouring better value, then swap legs until the combined chance lands on the target. */
+// Time windows for the parlay builder. Each returns [start, end] in ms, using the phone's local time.
+const TIME_WINDOWS = [
+  ['any', 'Any time', () => [0, Infinity]],
+  ['3h', 'Next 3 hrs', () => [Date.now(), Date.now() + 3 * 3600e3]],
+  ['today', 'Today', () => { const d = new Date(); d.setHours(24, 0, 0, 0); return [Date.now(), d.getTime()]; }],
+  ['tonight', 'Tonight', () => { const a = new Date(); a.setHours(17, 0, 0, 0); const b = new Date(); b.setHours(24, 0, 0, 0); return [Math.max(Date.now(), a.getTime()), b.getTime()]; }],
+  ['tomorrow', 'Tomorrow', () => { const a = new Date(); a.setHours(24, 0, 0, 0); const b = new Date(a); b.setDate(b.getDate() + 1); return [a.getTime(), b.getTime()]; }],
+];
+const inParlayWindow = c => {
+  const [a, b] = (TIME_WINDOWS.find(w => w[0] === state.parlay.time) || TIME_WINDOWS[0])[2]();
+  const t = new Date(c.time).getTime();
+  return t >= a && t < b;
+};
 const targetPool = () => {
   const floor = S.mode === 'value' ? 0 : S.safeMinEV / 100; // never take badly-priced legs
-  return filtered().filter(c => c.ev >= floor && !state.parlay.banned.includes(c.id));
+  return filtered().filter(c => c.ev >= floor && !state.parlay.banned.includes(c.id) && inParlayWindow(c));
 };
 const perLegTarget = () => Math.pow(state.parlay.target / 100, 1 / state.parlay.n);
 function parlayScore(legs, logT) {
@@ -605,9 +618,13 @@ function targetHint() {
 }
 function parlayOut() {
   const P = state.parlay;
-  if (!P.legs.length) return targetPool().length ? '' : noPicksMsg();
+  if (!P.legs.length) {
+    if (targetPool().length) return '';
+    if (state.parlay.time !== 'any' && state.cands.length) return `<div class="empty"><div class="e">🕒</div><p>No qualifying bets in that time window. Try a wider window, the other mode, or load props for those games.</p></div>`;
+    return noPicksMsg();
+  }
   let h = '';
-  if (P.legs.length < P.n) h += `<div class="note">Only found ${P.legs.length} qualifying legs. Try another mode, more sports, or load more props.</div>`;
+  if (P.legs.length < P.n) h += `<div class="note">Only found ${P.legs.length} qualifying legs${P.time !== 'any' ? ' in this time window' : ''}. Try ${P.time !== 'any' ? 'a wider time window, ' : ''}another mode, more sports, or load more props.</div>`;
   const got = parlayMath(P.legs).prob * 100;
   if (Math.abs(got - P.target) > Math.max(2, P.target * 0.15)) h += `<div class="note">Closest match available: <b>${got.toFixed(1)}%</b> (target ${P.target}%). Change the number of legs or the filters to get closer.</div>`;
   return h + summary(P.legs, `${P.legs.length}-leg parlay at ${esc(myBook().name)} · target ${P.target}%`) +
@@ -634,6 +651,8 @@ function viewParlay() {
       <div class="slidelabels"><span>🚀 Long shot</span><span>⚖️ Balanced</span><span>🛡️ Safer</span></div>
       <div class="muted small" id="tgtHint">${targetHint()}</div>
     </div>
+    <h3>When</h3>
+    <div class="chips">${TIME_WINDOWS.map(([k, l]) => `<button class="chip ${state.parlay.time === k ? 'on' : ''}" data-ptime="${k}">🕒 ${l}</button>`).join('')}</div>
     ${filterChips()}
     <div class="field"><label>Stake ($)</label><input type="number" inputmode="decimal" id="stake" value="${esc(P.stake)}"></div>
     <div class="btnrow"><button class="btn" data-act="build">Build ${P.n}-leg parlay</button>${P.legs.length ? '<button class="btn ghost" data-act="reroll">🎲 Shuffle</button>' : ''}</div>
@@ -726,7 +745,7 @@ function viewSettings() {
   <b>Safe mode</b> shows the outcomes most likely to hit, while skipping heavy favorites and bad prices.<br><br>
   No pick is guaranteed. Even +EV bets lose often. Bet only what you can afford to lose.</div>
   <div class="note">Must be 21+ (18+ in some states) and in a legal jurisdiction. Gambling problem? Call or text <b>1-800-GAMBLER</b>.</div>
-  <p class="muted small" style="text-align:center">SharpSlip v1.4</p>`;
+  <p class="muted small" style="text-align:center">SharpSlip v1.5</p>`;
 }
 
 function openBooks() {
@@ -764,6 +783,11 @@ document.addEventListener('click', e => {
   }
   if (d.unslip) { state.slip = state.slip.filter(x => x !== d.unslip); LS.set('ss_slip', state.slip); render(); return; }
   if (d.rm) { removeLeg(d.rm); render(); return; }
+  if (d.ptime) {
+    state.parlay.time = d.ptime; LS.set('ss_ptime', d.ptime);
+    if (state.parlay.legs.length) { state.parlay.banned = []; buildParlay(false); }
+    render(); return;
+  }
   if (d.prop) { loadProps([d.prop]); return; }
   switch (d.act) {
     case 'pickbook': openBooks(); break;
